@@ -55,6 +55,26 @@ def make_keyboard():
     return json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
 
 
+def make_dates_keyboard(weekday):
+    data = load_schedule()
+    year = data["year"]
+    dates = set()
+    for lesson in data.get("lessons", []):
+        if lesson["weekday"] == weekday:
+            for day in lesson["dates"]:
+                full_date = date.fromisoformat(f"{year}-{day[3:5]}-{day[:2]}")
+                if full_date.weekday() == weekday:
+                    dates.add(full_date)
+    if not dates:
+        return None
+    buttons = []
+    for day in sorted(dates):
+        buttons.append({"text": day.strftime("%d.%m.%Y"), "callback_data": f"date:{day.isoformat()}"})
+    rows = [buttons[index:index + 3] for index in range(0, len(buttons), 3)]
+    rows.append([{"text": "⬅️ К дням недели", "callback_data": "menu"}])
+    return json.dumps({"inline_keyboard": rows}, ensure_ascii=False)
+
+
 def format_day(day, lessons):
     date_label = datetime.strptime(day, "%Y-%m-%d").strftime("%d.%m.%Y")
     result = [f"📅 {date_label} — {WEEKDAYS[date.fromisoformat(day).weekday()]}"]
@@ -74,7 +94,7 @@ def format_day(day, lessons):
     return "\n".join(result)
 
 
-def schedule_text(choice):
+def get_schedule_data():
     data = load_schedule()
     lessons = data.get("lessons", [])
     year = data["year"]
@@ -85,15 +105,20 @@ def schedule_text(choice):
             if full_date.weekday() != lesson["weekday"]:
                 raise ValueError(f"Дата {day} не соответствует дню недели в JSON")
             by_date.setdefault(full_date.isoformat(), []).append(lesson)
+    return by_date
+
+
+def schedule_text(choice):
+    by_date = get_schedule_data()
     if choice == "today":
         today = date.today().isoformat()
         return format_day(today, by_date[today]) if today in by_date else "На сегодня расписание пока не добавлено."
+    if choice.startswith("date:"):
+        selected = choice.split(":", 1)[1]
+        return format_day(selected, by_date[selected]) if selected in by_date else "Для этой даты расписание не найдено."
 
     weekday = int(choice.split(":", 1)[1])
-    matching = sorted(day for day in by_date if date.fromisoformat(day).weekday() == weekday)
-    if not matching:
-        return f"В JSON пока нет дат для дня «{WEEKDAY_BUTTONS[weekday].lower()}»."
-    return "\n\n".join(format_day(day, by_date[day]) for day in matching)
+    return f"Выберите дату ({WEEKDAY_BUTTONS[weekday].lower()}):"
 
 
 def send_message(token, chat_id, text, keyboard=None):
@@ -101,6 +126,13 @@ def send_message(token, chat_id, text, keyboard=None):
     if keyboard:
         params["reply_markup"] = keyboard
     api_call(token, "sendMessage", params)
+
+
+def edit_message(token, chat_id, message_id, text, keyboard=None):
+    params = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if keyboard:
+        params["reply_markup"] = keyboard
+    api_call(token, "editMessageText", params)
 
 
 def send_schedule(token, chat_id, text):
@@ -143,12 +175,29 @@ def main():
                 elif callback:
                     choice = callback["data"]
                     try:
-                        text = schedule_text(choice) if choice == "today" or choice.startswith("weekday:") else "Неизвестный выбор."
+                        if choice == "menu":
+                            edit_message(token, callback["message"]["chat"]["id"], callback["message"]["message_id"],
+                                         "Расписание группы 4117. Выберите день:", make_keyboard())
+                        elif choice.startswith("weekday:"):
+                            weekday = int(choice.split(":", 1)[1])
+                            keyboard = make_dates_keyboard(weekday)
+                            text = schedule_text(choice)
+                            edit_message(token, callback["message"]["chat"]["id"], callback["message"]["message_id"],
+                                         text if keyboard else f"Для дня «{WEEKDAY_BUTTONS[weekday].lower()}» дат нет.", keyboard)
+                        elif choice == "today":
+                            text = schedule_text(choice)
+                            edit_message(token, callback["message"]["chat"]["id"], callback["message"]["message_id"],
+                                         text, make_keyboard())
+                        elif choice.startswith("date:"):
+                            text = schedule_text(choice)
+                            edit_message(token, callback["message"]["chat"]["id"], callback["message"]["message_id"],
+                                         text, make_keyboard())
+                        else:
+                            text = "Неизвестный выбор."
                     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
                         print(f"Ошибка расписания: {error}")
                         text = "Не удалось прочитать расписание. Проверьте файл schedule.json."
                     api_call(token, "answerCallbackQuery", {"callback_query_id": callback["id"]})
-                    send_schedule(token, callback["message"]["chat"]["id"], text)
         except (urllib.error.URLError, TimeoutError, RuntimeError) as error:
             print(f"Ошибка Telegram API: {error}. Повтор через 3 секунды.")
             time.sleep(3)
