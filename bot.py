@@ -186,6 +186,14 @@ def main():
                                  "Расписание группы 4117. Выберите день:", make_keyboard())
                 elif callback:
                     choice = callback["data"]
+                    # Telegram expects callback queries to be answered quickly.
+                    # Acknowledge before schedule parsing and message editing.
+                    try:
+                        api_call(token, "answerCallbackQuery", {"callback_query_id": callback["id"]})
+                    except RuntimeError as error:
+                        # Updates can already be stale when polling resumes; this
+                        # must not prevent the selected action from being handled.
+                        print(f"Не удалось подтвердить нажатие кнопки: {error}")
                     try:
                         if choice == "menu":
                             edit_message(token, callback["message"]["chat"]["id"], callback["message"]["message_id"],
@@ -209,7 +217,6 @@ def main():
                     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
                         print(f"Ошибка расписания: {error}")
                         text = "Не удалось прочитать расписание. Проверьте файл schedule.json."
-                    api_call(token, "answerCallbackQuery", {"callback_query_id": callback["id"]})
         except (urllib.error.URLError, TimeoutError, RuntimeError) as error:
             print(f"Ошибка Telegram API: {error}. Повтор через 3 секунды.")
             time.sleep(3)
