@@ -20,8 +20,20 @@ WEEKDAY_BUTTONS = ["Понедельник", "Вторник", "Среда", "Ч
 def api_call(token, method, data=None):
     body = urllib.parse.urlencode(data or {}).encode()
     request = urllib.request.Request(API.format(token, method), data=body)
-    with urllib.request.urlopen(request, timeout=40) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=40) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # Telegram includes the useful reason (for example, "message is not
+        # modified") in the JSON body even when the HTTP status is 400.
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+            description = payload.get("description", str(error))
+            error_code = payload.get("error_code", error.code)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            description = error.reason or str(error)
+            error_code = error.code
+        raise RuntimeError(f"Telegram API {error_code}: {description}") from error
     if not payload.get("ok"):
         raise RuntimeError(payload.get("description", "Telegram API error"))
     return payload["result"]
