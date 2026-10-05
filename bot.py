@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 API = "https://api.telegram.org/bot{}/{}"
+POLL_TIMEOUT = 50
+REQUEST_TIMEOUT = POLL_TIMEOUT + 10
 SCHEDULE_PATH = Path(__file__).with_name("schedule.json")
 ENV_PATH = Path(__file__).with_name(".env")
 WEEKDAYS = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
@@ -21,7 +23,7 @@ def api_call(token, method, data=None):
     body = urllib.parse.urlencode(data or {}).encode()
     request = urllib.request.Request(API.format(token, method), data=body)
     try:
-        with urllib.request.urlopen(request, timeout=40) as response:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         # Telegram includes the useful reason (for example, "message is not
@@ -170,13 +172,17 @@ def main():
     if not token:
         raise SystemExit("Добавьте TELEGRAM_BOT_TOKEN в файл .env")
     offset = None
+    retry_delay = 3
     print("Бот запущен. Ожидаю сообщения…")
     while True:
         try:
-            params = {"timeout": 30}
+            # Long polling waits for updates on Telegram's side, so an idle bot
+            # makes roughly one request per 50 seconds instead of busy polling.
+            params = {"timeout": POLL_TIMEOUT}
             if offset is not None:
                 params["offset"] = offset
             updates = api_call(token, "getUpdates", params)
+            retry_delay = 3
             for update in updates:
                 offset = update["update_id"] + 1
                 message = update.get("message")
@@ -218,8 +224,9 @@ def main():
                         print(f"Ошибка расписания: {error}")
                         text = "Не удалось прочитать расписание. Проверьте файл schedule.json."
         except (urllib.error.URLError, TimeoutError, RuntimeError) as error:
-            print(f"Ошибка Telegram API: {error}. Повтор через 3 секунды.")
-            time.sleep(3)
+            print(f"Ошибка Telegram API: {error}. Повтор через {retry_delay} секунд.")
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
 
 
 if __name__ == "__main__":
